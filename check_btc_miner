@@ -6,7 +6,7 @@ use Getopt::Long;
 use Nagios::Plugin qw(%ERRORS);
 use DateTime;
 
-    my $VERSION                 = 0.1;
+    my $VERSION                 = 0.2;
 
 ## Defaults
     my $default_log_file                = '/var/log/syslog';
@@ -16,6 +16,10 @@ use DateTime;
     my $default_failed_hashes_critical    = 10;
     my $default_failed_hashes_percentage_warning  = 1;
     my $default_failed_hashes_percentage_critical = 2;
+    my $default_hardware_errors_warning   = 5;
+    my $default_hardware_errors_critical  = 10;
+    my $default_hardware_errors_percentage_warning  = 1;
+    my $default_hardware_errors_percentage_critical = 2;
 
     my $default_period                  = 30;
     my $default_watchdog                = 60;
@@ -29,8 +33,10 @@ use DateTime;
     my $miner                           = $default_miner;
 
     my $failed_hashes                   = join(',',$default_failed_hashes_warning,$default_failed_hashes_critical);
-
     my $failed_hashes_percentage        = join(',',$default_failed_hashes_percentage_warning,$default_failed_hashes_percentage_critical);
+
+    my $hardware_errors                 = join(',',$default_hardware_errors_warning,$default_hardware_errors_critical);
+    my $hardware_errors_percentage      = join(',',$default_hardware_errors_percentage_warning,$default_hardware_errors_percentage_critical);
 
     my $hash_rate_current_limits        = ',';
 
@@ -100,6 +106,9 @@ use DateTime;
 
         "failed_hashes_percentage=s"    => \$failed_hashes_percentage,
 
+        "hardware_errors=s"             => \$hardware_errors,
+        "hardware_errors_percentage=s"  => \$hardware_errors_percentage,
+
         "help"                      => \$help,
     );
 
@@ -157,6 +166,24 @@ use DateTime;
             if ($failed_hashes_percentage_critical <= $failed_hashes_percentage_warning);
     }
 
+
+## Get values for number of hardware errors limits
+    my ($hardware_errors_warning, $hardware_errors_critical);
+    if ($hardware_errors =~ m{^(\d+),(\d+)$}) {
+        $hardware_errors_warning = $1;
+        $hardware_errors_critical = $2;
+        quit('CRITICAL', 'Invalid --hardware_errors')
+            if ($hardware_errors_critical <= $hardware_errors_warning);
+    }
+
+## Get values for number of hardware errors percentage limits
+    my ($hardware_errors_percentage_warning, $hardware_errors_percentage_critical);
+    if ($hardware_errors_percentage =~ m{^(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)$}) {
+        $hardware_errors_percentage_warning = $1;
+        $hardware_errors_percentage_critical = $2;
+        quit('CRITICAL', 'Invalid --hardware_errors_percentage')
+            if ($hardware_errors_percentage_critical <= $hardware_errors_percentage_warning);
+    }
 
 ## Get a DateTime object for now, used throughout
     my $now = DateTime->now;
@@ -272,6 +299,19 @@ use DateTime;
         quit("WARNING", "$latest->{ hashes_failed_percentage }\% hash failure rate > $failed_hashes_percentage_warning\% $latest->{ raw }")
             if ($latest->{ hashes_failed_percentage } > $failed_hashes_percentage_warning);
 
+    ## Check hardware errors over $period
+        my $hardware_errors_increase = $latest->{ hardware_errors } - $earliest->{ hardware_errors };
+        quit("CRITICAL", "Hardware errors increased by $hardware_errors_increase in $period minutes $latest->{ raw }")
+            if ($hardware_errors_increase > $hardware_errors_critical);
+        quit("WARNING", "Hardware errors increased by $hardware_errors_increase in $period minutes $latest->{ raw }")
+            if ($hardware_errors_increase > $hardware_errors_warning);
+
+    ## Check failed percentages
+        quit("CRITICAL", "$latest->{ hardware_errors_percentage }\% harware error rate > $hardware_errors_percentage_critical\% $latest->{ raw }")
+            if ($latest->{ hardware_errors_percentage } > $hardware_errors_percentage_critical);
+        quit("WARNING", "$latest->{ hardware_errors_percentage }\% hardware error rate > $hardware_errors_percentage_warning\% $latest->{ raw }")
+            if ($latest->{ hardware_errors_percentage } > $hardware_errors_percentage_warning);
+
         return;
     }
 
@@ -313,14 +353,16 @@ use DateTime;
         print "USAGE\n\n";
         print "   check_btc_miner --hash_rate_current=warningMh/s,criticalMh/s [ --miner=" . join('|', keys(%$known_miners)) . " ] [ --log=$default_log_file ] [ --period=$default_period ] [ watchdog=$default_watchdog ] [ --store=$default_store ] [ --failed_hashes=warning,critical ] [ --failed_hashes_percentage=warning,critical\n";
         print "OPTIONS\n";
-        print "  --hash_rate_current        If the hash rate drops below these values an error will be returned. Values are integers and must be appended with Xh/s where X is one of " . join(',', keys(%$multipliers)) . " e.g --hash_rate_current=100Gh/s,50Gh/s\n";
-        print "  --miner                    The miner you are using, at present " . join (',', sort(keys(%$known_miners))) . " are supported (Default: $default_miner)\n";
-        print "  --log                      The logfile where the output from your miner is sent and should be read from (Default: $default_log_file)\n";
-        print "  --period                   The number of minutes that the plugin should monitor, this is used when determining the failed has increase (Default: $default_period)\n";
-        print "  --watchdog                 If the miner hasn't output data from this many seconds, warn as critical (Default: $default_watchdog)\n";
-        print "  --store                    This is the location that the plugin stores it's temporary data (Default: $default_store)\n";
-        print "  --failed_hashes            If the number of failed hashes increases by these levels over --period minutes an error will be returned (Default: ". join(',',$default_failed_hashes_warning,$default_failed_hashes_critical) . ")\n";
-        print "  --failed_hashes_percentage If the number of failed hashes over all time is above these levels an error will be returne (Default: ".join(',',$default_failed_hashes_percentage_warning,$default_failed_hashes_percentage_critical). ")\n";
+        print "  --hash_rate_current            If the hash rate drops below these values an error will be returned. Values are integers and must be appended with Xh/s where X is one of " . join(',', keys(%$multipliers)) . " e.g --hash_rate_current=100Gh/s,50Gh/s\n";
+        print "  --miner                        The miner you are using, at present " . join (',', sort(keys(%$known_miners))) . " are supported (Default: $default_miner)\n";
+        print "  --log                          The logfile where the output from your miner is sent and should be read from (Default: $default_log_file)\n";
+        print "  --period                       The number of minutes that the plugin should monitor, this is used when determining the failed has increase (Default: $default_period)\n";
+        print "  --watchdog                     If the miner hasn't output data from this many seconds, warn as critical (Default: $default_watchdog)\n";
+        print "  --store                        This is the location that the plugin stores it's temporary data (Default: $default_store)\n";
+        print "  --failed_hashes                If the number of failed hashes increases by these levels over --period minutes an error will be returned (Default: ". join(',',$default_failed_hashes_warning,$default_failed_hashes_critical) . ")\n";
+        print "  --failed_hashes_percentage     If the percentage of failed/accepted hashes over all time is above these levels an error will be returned (Default: ".join(',',$default_failed_hashes_percentage_warning,$default_failed_hashes_percentage_critical). ")\n";
+        print "  --hardware_errors              If the number of hardware errors increases by these levels over --period minutes an error will be returned (Default: ". join(',',$default_hardware_errors_warning,$default_hardware_errors_critical) . ")\n";
+        print "  --hardware_errors_percentage   If the percentage of hardware error over all time is above these levels an error will be returned (Default: ".join(',',$default_hardware_errors_percentage_warning,$default_hardware_errors_percentage_critical). ")\n";
         print "\nMinimal example: check_btc_miner --hash_rate_current=100Gh/s,80Mh/s\n";
         print "\n";
         exit 0;

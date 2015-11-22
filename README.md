@@ -40,7 +40,6 @@ check_btc_miner --hash_rate_current=300Mh/s,200Mh/s --log=/var/log/otherlogfile
 
 # Future Work
 - Support for other miners such as cpuminer and cgminer
-- Create check for hardware errors
 - Create check for average hash rates
 
 # Site
