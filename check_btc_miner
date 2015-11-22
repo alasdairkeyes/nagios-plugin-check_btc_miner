@@ -6,7 +6,7 @@ use Getopt::Long;
 use Nagios::Plugin qw(%ERRORS);
 use DateTime;
 
-    my $VERSION                 = 0.2;
+    my $VERSION                 = 0.3;
 
 ## Defaults
     my $default_log_file                = '/var/log/syslog';
@@ -70,6 +70,7 @@ use DateTime;
 
 ## Multiplier values - convert hash rates
     my $multipliers = {
+        ''      => 1,
         K       => 1_000,
         M       => 1_000_000,
         G       => 1_000_000_000,
@@ -85,6 +86,12 @@ use DateTime;
         bfgminer    => {
             regex       => qr{^(\w{3}\s+\d+\s\d{2}:\d{2}:\d{2})\s+([a-z_\-]+)\s+bfgminer\[(\d+)\]:\s+(\d+)s:([\d+\.]+)\s+avg:([\d+\.]+)\s+u:([\d+\.]+)\s+([A-Z])h/s\s+\|\s+A:(\d+)\s+R:(\d+)\+(\d+)\((.+?)\)\s+HW:(\d+)/(.+)$}i,
             processor   => \&bfg_miner_processor,
+        },
+
+        #   Nov 16 21:53:21 hp cgminer[5621]: (5s):179.8G (1m):120.6G (5m):35.39G (15m):12.65G (avg):183.1Gh/s
+        cgminer     => {
+            regex       => qr{^(\w{3}\s+\d+\s\d{2}:\d{2}:\d{2})\s+([a-z_\-]+)\s+cgminer\[(\d+)\]:\s+\((\d+)s\):(\d+\.\d+)[A-Z]?\s+\(1m\):(\d+\.\d+)[A-Z]?\s+\(5m\):(\d+\.\d+)[A-Z]?\s+\(15m\):(\d+\.\d+)[A-Z]?\s+\(avg\):(\d+\.\d+)([A-Z])?h/s},
+            processor   => \&cg_miner_processor,
         },
 
     };
@@ -267,13 +274,13 @@ use DateTime;
     sub run_checks {
 
     ## No entries found - not running
-        quit("CRITICAL", "No matching log lines found, miner might not be running")
+        quit("CRITICAL", "No recent matching log lines found, miner might not be running")
             if (!keys(%$data));
 
         my ($earliest, $latest) = get_earliest_and_latest($data);
 
     ## Timestamp isn't increasing - not running
-        quit("CRITICAL", "No esults in $watchdog seconds $latest->{ raw }")
+        quit("CRITICAL", "No results in $watchdog seconds $latest->{ raw }")
             if (($now->epoch - $latest->{ datetime }->epoch) > $watchdog);
 
 
@@ -359,10 +366,10 @@ use DateTime;
         print "  --period                       The number of minutes that the plugin should monitor, this is used when determining the failed has increase (Default: $default_period)\n";
         print "  --watchdog                     If the miner hasn't output data from this many seconds, warn as critical (Default: $default_watchdog)\n";
         print "  --store                        This is the location that the plugin stores it's temporary data (Default: $default_store)\n";
-        print "  --failed_hashes                If the number of failed hashes increases by these levels over --period minutes an error will be returned (Default: ". join(',',$default_failed_hashes_warning,$default_failed_hashes_critical) . ")\n";
-        print "  --failed_hashes_percentage     If the percentage of failed/accepted hashes over all time is above these levels an error will be returned (Default: ".join(',',$default_failed_hashes_percentage_warning,$default_failed_hashes_percentage_critical). ")\n";
-        print "  --hardware_errors              If the number of hardware errors increases by these levels over --period minutes an error will be returned (Default: ". join(',',$default_hardware_errors_warning,$default_hardware_errors_critical) . ")\n";
-        print "  --hardware_errors_percentage   If the percentage of hardware error over all time is above these levels an error will be returned (Default: ".join(',',$default_hardware_errors_percentage_warning,$default_hardware_errors_percentage_critical). ")\n";
+        print "  --failed_hashes                If the number of failed hashes increases by these levels over --period minutes an error will be returned - N/A on cgminer (Default: ". join(',',$default_failed_hashes_warning,$default_failed_hashes_critical) . ")\n";
+        print "  --failed_hashes_percentage     If the percentage of failed/accepted hashes over all time is above these levels an error will be returned - N/A on cgminer (Default: ".join(',',$default_failed_hashes_percentage_warning,$default_failed_hashes_percentage_critical). ")\n";
+        print "  --hardware_errors              If the number of hardware errors increases by these levels over --period minutes an error will be returned - N/A on cgminer (Default: ". join(',',$default_hardware_errors_warning,$default_hardware_errors_critical) . ")\n";
+        print "  --hardware_errors_percentage   If the percentage of hardware error over all time is above these levels an error will be returned - N/A on cgminer (Default: ".join(',',$default_hardware_errors_percentage_warning,$default_hardware_errors_percentage_critical). ")\n";
         print "\nMinimal example: check_btc_miner --hash_rate_current=100Gh/s,80Mh/s\n";
         print "\n";
         exit 0;
@@ -424,6 +431,59 @@ use DateTime;
         ## Clean up percentages
             $results->{ hashes_failed_percentage    } =~ s/\%$//;
             $results->{ hardware_errors_percentage  } =~ s/\%$//;
+
+        ## Clean up log line and add to hash
+            $log_line =~ s/\n+//;
+            $results->{ raw                 } = $log_line;
+
+            return $results;
+        } 
+        return;
+    }
+
+
+
+
+## Dedicated function for processing the --syslog output from cgminer
+    sub cg_miner_processor {
+        my $log_line = shift ||
+            return;
+
+        my $regex       = $known_miners->{ $miner }{ regex };
+
+        my $results = {};
+        if ($log_line =~ $regex) {
+
+        ## Manage dates
+            $results->{ date                } = $1;
+            $results->{ datetime            } = syslog_date_to_datetime($results->{ date });
+            # hostname = $2
+
+        ## pid
+            $results->{ pid                 } = $3;
+
+        ## log update period
+            $results->{ log_update_period   } = $4;
+
+        ## Hashrates
+            my $hash_rate_current             = $5;
+            my $hash_rate_average             = $9;
+            my $hash_rate_multiplier_char     = $10 || '';
+            my $hash_rate_multiplier          = $multipliers->{ $hash_rate_multiplier_char };
+
+            $results->{ hash_rate_current_text      } = join('',$hash_rate_current,  $hash_rate_multiplier_char,"h/s");
+            $results->{ hash_rate_current_numeric   } = $hash_rate_current * $hash_rate_multiplier;
+
+            $results->{ hash_rate_average_text      } = join('',$hash_rate_average,  $hash_rate_multiplier_char,"h/s");
+            $results->{ hash_rate_average_numeric   } = $hash_rate_average * $hash_rate_multiplier;
+
+            $results->{ hashes_accepted     } = 0;
+            $results->{ hashes_rejected     } = 0;
+            $results->{ hashes_stale        } = 0;
+            $results->{ hashes_failed       } = 0;
+            $results->{ hashes_failed_percentage    } = 0;
+            $results->{ hardware_errors     } = 0;
+            $results->{ hardware_errors_percentage  } = 0;
 
         ## Clean up log line and add to hash
             $log_line =~ s/\n+//;

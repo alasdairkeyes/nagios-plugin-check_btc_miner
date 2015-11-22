@@ -20,7 +20,9 @@ nagios    ALL=(ALL) NOPASSWD:/usr/lib/nagios/plugins/check_btc_miner
 ```
 
 # Supported configurations
-At present only BFGminer is supported
+At present only bfgminer/cgminer is supported
+
+Some checks aren't available on all miners, run with the --help switch to see more information
 
 # Examples
 
@@ -39,7 +41,7 @@ check_btc_miner --hash_rate_current=300Mh/s,200Mh/s --log=/var/log/otherlogfile
 ```
 
 # Future Work
-- Support for other miners such as cpuminer and cgminer
+- Support for other miners such as cpuminer
 - Create check for average hash rates
 
 # Site
