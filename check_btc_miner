@@ -1,0 +1,478 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+use Nagios::Plugin qw(%ERRORS);
+use DateTime;
+
+    my $VERSION                 = 0.1;
+
+## Defaults
+    my $default_log_file                = '/var/log/syslog';
+    my $default_store                   = '/tmp/.check_btc_miner';
+    my $default_miner                   = 'bfgminer';
+    my $default_failed_hashes_warning     = 5;
+    my $default_failed_hashes_critical    = 10;
+    my $default_failed_hashes_percentage_warning  = 1;
+    my $default_failed_hashes_percentage_critical = 2;
+
+    my $default_period                  = 30;
+    my $default_watchdog                = 60;
+
+
+## Settings to use, obtained from defaults
+    my $log_file                        = $default_log_file;
+
+## Location to store historical information
+    my $store                           = $default_store;
+    my $miner                           = $default_miner;
+
+    my $failed_hashes                   = join(',',$default_failed_hashes_warning,$default_failed_hashes_critical);
+
+    my $failed_hashes_percentage        = join(',',$default_failed_hashes_percentage_warning,$default_failed_hashes_percentage_critical);
+
+    my $hash_rate_current_limits        = ',';
+
+    my $hash_rate_average_limits        = ',';
+
+
+## Number of minutes to hold historical information for
+    my $period                  = $default_period;
+
+## If no updated information for this many seconds error
+    my $watchdog                = $default_watchdog;
+
+    my $help;
+
+
+## Used for Syslog interpretation
+    my $months = {
+        "Jan"   => 1,
+        "Feb"   => 2,
+        "Mar"   => 3,
+        "Apr"   => 4,
+        "May"   => 5,
+        "Jun"   => 6,
+        "Jul"   => 7,
+        "Aug"   => 8,
+        "Sep"   => 9,
+        "Oct"   => 10,
+        "Nov"   => 11,
+        "Dec"   => 12,
+    };
+
+## Multiplier values - convert hash rates
+    my $multipliers = {
+        K       => 1_000,
+        M       => 1_000_000,
+        G       => 1_000_000_000,
+        T       => 1_000_000_000_000,
+        P       => 1_000_000_000_000,
+        E       => 1_000_000_000_000_000,
+    };
+
+
+    my $known_miners = {
+        #   Nov 15 00:58:27 hp bfgminer[2099]: 20s:341.4 avg:335.9 u:329.2 Mh/s | A:5202 R:5+0(.10%) HW:258/.62%
+        #   Nov 16 21:53:21 hp bfgminer[5621]: 20s:358.4 avg:335.9 u:333.6 Mh/s | A:1116 R:0+0(none) HW:49/.55%
+        bfgminer    => {
+            regex       => qr{^(\w{3}\s+\d+\s\d{2}:\d{2}:\d{2})\s+([a-z_\-]+)\s+bfgminer\[(\d+)\]:\s+(\d+)s:([\d+\.]+)\s+avg:([\d+\.]+)\s+u:([\d+\.]+)\s+([A-Z])h/s\s+\|\s+A:(\d+)\s+R:(\d+)\+(\d+)\((.+?)\)\s+HW:(\d+)/(.+)$}i,
+            processor   => \&bfg_miner_processor,
+        },
+
+    };
+
+
+## Get command line switches
+    GetOptions (
+        "log=s"                     => \$log_file,
+        "store=s"                   => \$store,
+        "miner=s"                   => \$miner,
+        "period=i"                  => \$period,
+        "watchdog=i"                => \$watchdog,
+
+        "hash_rate_current=s"       => \$hash_rate_current_limits,
+
+        "hash_rate_average_limit=s"     => \$hash_rate_average_limits,
+
+        "failed_hashes=s"               => \$failed_hashes,
+
+        "failed_hashes_percentage=s"    => \$failed_hashes_percentage,
+
+        "help"                      => \$help,
+    );
+
+
+## Show help?
+    help()
+        if ($help);
+
+## Check switches from command line
+    quit('UNKNOWN', "Unknown miner")
+        unless (exists($known_miners->{ lc($miner) }));
+
+    quit('UNKNOWN', "Can't read logfile")
+        unless (-r $log_file);
+
+    quit('CRITIAL', "Invalid period")
+        unless ($period =~ /^\d+$/);
+
+    quit('CRITICAL', "Invalid watchdog")
+        unless ($watchdog =~ /^\d+$/);
+
+## Get values for current hashrate limits
+    my ($hash_rate_current_warning_text, $hash_rate_current_warning_number, $hash_rate_current_critical_text, $hash_rate_current_critical_number);
+    if ($hash_rate_current_limits =~ m{^(.*?),(.*?)$}) {
+        $hash_rate_current_warning_text = $1;
+        $hash_rate_current_critical_text = $2;
+        $hash_rate_current_warning_number = hash_rate_text_to_number($hash_rate_current_warning_text) ||
+            quit('CRITICAL', 'Invalid --hash_rate_current');
+        $hash_rate_current_critical_number = hash_rate_text_to_number($hash_rate_current_critical_text) ||
+            quit('CRITICAL', 'Invalid --hash_rate_current');
+        quit('CRITICAL', 'Invalid --hash_rate_current')
+            if ($hash_rate_current_critical_number >= $hash_rate_current_warning_number);
+    }
+
+    quit('CRITICAL', 'Must supply --hash_rate_current')
+        unless ($hash_rate_current_warning_number && $hash_rate_current_critical_number);
+
+
+## Get values for number of failed hashes limits
+    my ($failed_hashes_warning, $failed_hashes_critical);
+    if ($failed_hashes =~ m{^(\d+),(\d+)$}) {
+        $failed_hashes_warning = $1;
+        $failed_hashes_critical = $2;
+        
+        quit('CRITICAL', 'Invalid --failed_hashes')
+            if ($failed_hashes_critical <= $failed_hashes_warning);
+    }
+
+## Get values for number of failed hashes percentages
+    my ($failed_hashes_percentage_warning, $failed_hashes_percentage_critical);
+    if ($failed_hashes_percentage =~ m{^(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)$}) {
+        $failed_hashes_percentage_warning = $1;
+        $failed_hashes_percentage_critical = $2;
+        quit('CRITICAL', 'Invalid --failed_hashes_percentage')
+            if ($failed_hashes_percentage_critical <= $failed_hashes_percentage_warning);
+    }
+
+
+## Get a DateTime object for now, used throughout
+    my $now = DateTime->now;
+
+## Get historical data from store
+    my $data = read_store();
+
+# Get latest data from logs and add to $data
+    my $latest_data = get_latest_log_data();
+    $data->{ $latest_data->{ datetime }->epoch } = $latest_data
+        if ($latest_data);
+
+## Purge old data over $period minutes
+    $data = purge_old_data($data);
+
+## Save data back to store
+    save_store($data);
+
+### Run Checks
+    run_checks();
+
+
+## And we're all good
+    my (undef,$latest) = get_earliest_and_latest($data);
+    quit("OK", $latest->{ raw });
+
+
+
+## Get the latest data from the logfiles for this miner
+    sub get_latest_log_data {
+        my $regex = $known_miners->{ $miner }{ regex };
+
+        open (my $log_file_fh, '<', $log_file)
+            || quit("CRITICAL", "Failed to open log");
+
+
+    ## Cycle through lines of file and get the latest one that
+    ## matches our regex
+
+        my $latest ='';
+        foreach my $line(<$log_file_fh>) {
+            $latest = $line
+                if ($line =~ $regex);
+        }
+
+    ## return if no data found
+        return
+            unless ($latest);
+
+    ## Run log line through processor function for this miner
+        my $processor = $known_miners->{ $miner }{ processor };
+        return $processor->( $latest );
+    }
+
+
+## Read historical data from store
+    sub read_store {
+        return {}
+            unless (-f $store);
+
+        open (my $store_fh, '<', $store)
+            || quit('CRITICAL', "Failed to open store");
+
+        my $processor = $known_miners->{ $miner }{ processor };
+
+        my $data = {};
+        my $line_count = 0;
+        foreach my $line (<$store_fh>) {
+            ++$line_count;
+            my $line_hash = $processor->($line)
+                || quit('CRITICAL', "Invalid line $line_count in store");
+
+            $data->{ $line_hash->{ datetime }->epoch } = $line_hash;
+        }
+        close ($store_fh);
+        return $data;
+    }
+
+
+## Function to run checks on data and return errors if they exist
+    sub run_checks {
+
+    ## No entries found - not running
+        quit("CRITICAL", "No matching log lines found, miner might not be running")
+            if (!keys(%$data));
+
+        my ($earliest, $latest) = get_earliest_and_latest($data);
+
+    ## Timestamp isn't increasing - not running
+        quit("CRITICAL", "No esults in $watchdog seconds $latest->{ raw }")
+            if (($now->epoch - $latest->{ datetime }->epoch) > $watchdog);
+
+
+
+    ## Current hash-rate is sub-par
+        quit("CRITICAL", "Current hash rate < $hash_rate_current_critical_text $latest->{ raw }")
+            if ($latest->{ hash_rate_current_numeric } < $hash_rate_current_critical_number);
+        quit("WARNING", "Current Hash rate < $hash_rate_current_warning_text $latest->{ raw }")
+            if ($latest->{ hash_rate_current_numeric } < $hash_rate_current_warning_number);
+
+    ## How much has failed hashrate increased over $period
+        my $failed_hashes_increase = $latest->{ hashes_failed } - $earliest->{ hashes_failed };
+
+        quit("CRITICAL", "Failed hashes increased by $failed_hashes_increase in $period minutes $latest->{ raw }")
+            if ($failed_hashes_increase > $failed_hashes_critical);
+
+        quit("WARNING", "Failed hashes increased by $failed_hashes_increase in $period minutes $latest->{ raw }")
+            if ($failed_hashes_increase > $failed_hashes_warning);
+
+    ## Check failed percentages
+        quit("CRITICAL", "$latest->{ hashes_failed_percentage }\% hash failure rate > $failed_hashes_percentage_critical\% $latest->{ raw }")
+            if ($latest->{ hashes_failed_percentage } > $failed_hashes_percentage_critical);
+        quit("WARNING", "$latest->{ hashes_failed_percentage }\% hash failure rate > $failed_hashes_percentage_warning\% $latest->{ raw }")
+            if ($latest->{ hashes_failed_percentage } > $failed_hashes_percentage_warning);
+
+        return;
+    }
+
+
+## Look at the dataset we have and return the earliest and latest entries
+    sub get_earliest_and_latest {
+        my $data = shift;
+
+    ## Order timestamps and shift off
+        my @timestamps = sort { $a <=> $b } keys(%$data);
+
+        my $earliest_epoch  = shift(@timestamps);
+        my $latest_epoch    = pop(@timestamps) || $earliest_epoch;
+        
+        return ($data->{ $earliest_epoch }, $data->{ $latest_epoch })
+    }
+
+
+
+
+
+
+## Function to handle output
+    sub quit {
+        my $status = shift;
+        my $message = join('',@_);
+     ## Pipe in nagios seems to strip of stuff afterwards, remove it
+        $message =~ s/\|//g;
+        print $status . ": $message\n";
+        exit $ERRORS{ $status };
+    }
+
+
+
+
+## Help message
+    sub help {
+        print "Version $VERSION\n";
+        print "USAGE\n\n";
+        print "   check_btc_miner --hash_rate_current=warningMh/s,criticalMh/s [ --miner=" . join('|', keys(%$known_miners)) . " ] [ --log=$default_log_file ] [ --period=$default_period ] [ watchdog=$default_watchdog ] [ --store=$default_store ] [ --failed_hashes=warning,critical ] [ --failed_hashes_percentage=warning,critical\n";
+        print "OPTIONS\n";
+        print "  --hash_rate_current        If the hash rate drops below these values an error will be returned. Values are integers and must be appended with Xh/s where X is one of " . join(',', keys(%$multipliers)) . " e.g --hash_rate_current=100Gh/s,50Gh/s\n";
+        print "  --miner                    The miner you are using, at present " . join (',', sort(keys(%$known_miners))) . " are supported (Default: $default_miner)\n";
+        print "  --log                      The logfile where the output from your miner is sent and should be read from (Default: $default_log_file)\n";
+        print "  --period                   The number of minutes that the plugin should monitor, this is used when determining the failed has increase (Default: $default_period)\n";
+        print "  --watchdog                 If the miner hasn't output data from this many seconds, warn as critical (Default: $default_watchdog)\n";
+        print "  --store                    This is the location that the plugin stores it's temporary data (Default: $default_store)\n";
+        print "  --failed_hashes            If the number of failed hashes increases by these levels over --period minutes an error will be returned (Default: ". join(',',$default_failed_hashes_warning,$default_failed_hashes_critical) . ")\n";
+        print "  --failed_hashes_percentage If the number of failed hashes over all time is above these levels an error will be returne (Default: ".join(',',$default_failed_hashes_percentage_warning,$default_failed_hashes_percentage_critical). ")\n";
+        print "\nMinimal example: check_btc_miner --hash_rate_current=100Gh/s,80Mh/s\n";
+        print "\n";
+        exit 0;
+    }
+
+
+
+## Dedicated function for processing the --syslog output from BFGminer
+    sub bfg_miner_processor {
+        my $log_line = shift ||
+            return;
+
+        my $regex       = $known_miners->{ $miner }{ regex };
+
+        my $results = {};
+        if ($log_line =~ $regex) {
+
+        ## Manage dates
+            $results->{ date                } = $1;
+            $results->{ datetime            } = syslog_date_to_datetime($results->{ date });
+            # hostname = $2
+
+        ## pid
+            $results->{ pid                 } = $3;
+
+        ## log update period
+            $results->{ log_update_period   } = $4;
+
+        ## Hashrates
+            my $hash_rate_current             = $5;
+            my $hash_rate_average             = $6;
+            my $hash_rate_adjusted            = $7;
+            my $hash_rate_multiplier_char     = $8;
+            my $hash_rate_multiplier          = $multipliers->{ $hash_rate_multiplier_char };
+
+            $results->{ hash_rate_current_text      } = join('',$hash_rate_current,  $hash_rate_multiplier_char,"h/s");
+            $results->{ hash_rate_current_numeric   } = $hash_rate_current * $hash_rate_multiplier;
+
+            $results->{ hash_rate_average_text      } = join('',$hash_rate_average,  $hash_rate_multiplier_char,"h/s");
+            $results->{ hash_rate_average_numeric   } = $hash_rate_average * $hash_rate_multiplier;
+
+            $results->{ hash_rate_adjusted_text     } = join('',$hash_rate_adjusted, $hash_rate_multiplier_char,"h/s");
+            $results->{ hash_rate_adjusted_numeric  } = $hash_rate_adjusted * $hash_rate_multiplier;
+
+            $results->{ hashes_accepted     } = $9;
+            $results->{ hashes_rejected     } = $10;
+            $results->{ hashes_stale        } = $11;
+            $results->{ hashes_failed       } = $results->{ hashes_rejected } +
+                                                $results->{ hashes_stale    };
+            $results->{ hashes_failed_percentage    } = $12 eq "none"
+                ? 0
+                : $12;
+
+            $results->{ hardware_errors     } = $13;
+            $results->{ hardware_errors_percentage  } = $14 eq "none"
+                ? 0
+                : $14;
+
+        ## Clean up percentages
+            $results->{ hashes_failed_percentage    } =~ s/\%$//;
+            $results->{ hardware_errors_percentage  } =~ s/\%$//;
+
+        ## Clean up log line and add to hash
+            $log_line =~ s/\n+//;
+            $results->{ raw                 } = $log_line;
+
+            return $results;
+        } 
+        return;
+    }
+
+
+
+
+    
+## Save data to temp_store
+    sub save_store {
+        my $data = shift;
+
+        open (my $store_fh, '>', $store)
+            || quit("CRITICAL", "Failed to write to store");
+
+        foreach my $key (sort(keys(%$data))) {
+            print $store_fh $data->{ $key }{ raw } . "\n";
+        }
+        close($store_fh);
+        return $data;
+    }
+
+
+
+
+
+## Purge data older than $period minutes
+    sub purge_old_data {
+        my $data = shift;
+        
+        foreach my $time (keys(%$data)) {
+            if ($time < ($now->epoch-($period * 60))) {
+                delete $data->{ $time };
+            }
+        }
+        return $data;
+    }
+
+
+
+
+
+## Convert syslog timestamp to DateTime object
+    sub syslog_date_to_datetime {
+        my $date = shift;
+        if ($date =~ qr{^(\w{3})\s+(\d+)\s(\d{2}):(\d{2}):(\d{2})$}i) {
+
+            my $time = DateTime->new(
+                year    => $now->year,
+                month   => $months->{ $1 },
+                day     => $2,
+                hour    => $3,
+                minute  => $4,
+                second  => $5
+            );
+
+        ## Syslog doesn't store year so check if this is last years log
+        ## Not foolproof but as long as we're not checking logs that are years
+        ## old, it should be OK
+            if ($time->epoch > $now->epoch) {
+                $time->set( year => ($time->year - 1) );
+            }
+            return $time;
+        }
+        quit("CRITICAL", "Invalid date format in syslog");
+    }
+
+
+
+
+
+## Convert hash_rate (123Kh/s) to number (123000)
+    sub hash_rate_text_to_number {
+        my $hash_rate_text = shift
+            || return;
+
+        if ($hash_rate_text =~ m{^([\d\.]+)([A-Z])h/s}) {
+            my $number = $1;
+            my $multiplier = $multipliers->{ $2 }
+                || return;
+
+            return $number * $multiplier
+                || undef;
+        }
+        return;
+    }
+
+   
