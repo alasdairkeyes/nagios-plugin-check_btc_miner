@@ -16,7 +16,7 @@ command[check_btc_miner]=sudo /usr/lib/nagios/plugins/check_btc_miner --hash_rat
 ```
 - If the syslog file that your miner outputs to can only be read by root, Add a line to your sudoers config to allow nagios to read your syslog
 ```
-nagios    ALL=(ALL) NOPASSWD: /usr/lib/nagios/plugins/check_ide_smart,/usr/lib/nagios/plugins/check_btc_miner
+nagios    ALL=(ALL) NOPASSWD:/usr/lib/nagios/plugins/check_btc_miner
 ```
 
 # Supported configurations
@@ -51,7 +51,6 @@ check_btc_miner --hash_rate_current=300Mh/s,200Mh/s --log=/var/log/otherlogfile
 
 
 License
-- Released under GPL V2 
-  http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+- Released under GPL V3 
   See included LICENSE file
 
