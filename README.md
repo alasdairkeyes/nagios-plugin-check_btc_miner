@@ -31,9 +31,13 @@ Some checks aren't available on all miners, run with the --help switch to see mo
 check_btc_miner --help
 ```
 
-- Basic example
+- Basic examples
+Must provide at least one of --hash_rate_current or --hash_rate_average
 ```
 check_btc_miner --hash_rate_current=300Mh/s,200Mh/s
+```
+```
+check_btc_miner --hash_rate_average=300Mh/s,200Mh/s
 ```
 - Different syslog file
 ```
@@ -42,7 +46,6 @@ check_btc_miner --hash_rate_current=300Mh/s,200Mh/s --log=/var/log/otherlogfile
 
 # Future Work
 - Support for other miners such as cpuminer
-- Create check for average hash rates
 
 # Site
 - https://github.com/alasdairkeyes/nagios-plugin-check_btc_miner

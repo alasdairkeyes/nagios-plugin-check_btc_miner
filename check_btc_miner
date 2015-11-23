@@ -6,7 +6,7 @@ use Getopt::Long;
 use Nagios::Plugin qw(%ERRORS);
 use DateTime;
 
-    my $VERSION                 = 0.3;
+    my $VERSION                 = 0.4;
 
 ## Defaults
     my $default_log_file                = '/var/log/syslog';
@@ -38,9 +38,8 @@ use DateTime;
     my $hardware_errors                 = join(',',$default_hardware_errors_warning,$default_hardware_errors_critical);
     my $hardware_errors_percentage      = join(',',$default_hardware_errors_percentage_warning,$default_hardware_errors_percentage_critical);
 
-    my $hash_rate_current_limits        = ',';
-
-    my $hash_rate_average_limits        = ',';
+    my $hash_rate_current_limits        = '';
+    my $hash_rate_average_limits        = '';
 
 
 ## Number of minutes to hold historical information for
@@ -110,7 +109,6 @@ use DateTime;
         "hash_rate_average_limit=s"     => \$hash_rate_average_limits,
 
         "failed_hashes=s"               => \$failed_hashes,
-
         "failed_hashes_percentage=s"    => \$failed_hashes_percentage,
 
         "hardware_errors=s"             => \$hardware_errors,
@@ -139,19 +137,37 @@ use DateTime;
 
 ## Get values for current hashrate limits
     my ($hash_rate_current_warning_text, $hash_rate_current_warning_number, $hash_rate_current_critical_text, $hash_rate_current_critical_number);
-    if ($hash_rate_current_limits =~ m{^(.*?),(.*?)$}) {
+    if ($hash_rate_current_limits && $hash_rate_current_limits =~ m{^(.*?),(.*?)$}) {
         $hash_rate_current_warning_text = $1;
         $hash_rate_current_critical_text = $2;
         $hash_rate_current_warning_number = hash_rate_text_to_number($hash_rate_current_warning_text) ||
             quit('CRITICAL', 'Invalid --hash_rate_current');
         $hash_rate_current_critical_number = hash_rate_text_to_number($hash_rate_current_critical_text) ||
             quit('CRITICAL', 'Invalid --hash_rate_current');
-        quit('CRITICAL', 'Invalid --hash_rate_current')
+        quit('CRITICAL', 'Invalid --hash_rate_current critical must be less than warning')
             if ($hash_rate_current_critical_number >= $hash_rate_current_warning_number);
     }
 
-    quit('CRITICAL', 'Must supply --hash_rate_current')
-        unless ($hash_rate_current_warning_number && $hash_rate_current_critical_number);
+## Get values for average hashrate limits
+    my ($hash_rate_average_warning_text, $hash_rate_average_warning_number, $hash_rate_average_critical_text, $hash_rate_average_critical_number);
+    if ($hash_rate_average_limits && $hash_rate_average_limits =~ m{^(.*?),(.*?)$}) {
+        $hash_rate_average_warning_text = $1;
+        $hash_rate_average_critical_text = $2;
+        $hash_rate_average_warning_number = hash_rate_text_to_number($hash_rate_average_warning_text) ||
+            quit('CRITICAL', 'Invalid --hash_rate_average');
+        $hash_rate_average_critical_number = hash_rate_text_to_number($hash_rate_average_critical_text) ||
+            quit('CRITICAL', 'Invalid --hash_rate_average');
+        quit('CRITICAL', 'Invalid --hash_rate_average critical must be less than warning')
+            if ($hash_rate_average_critical_number >= $hash_rate_average_warning_number);
+    }
+
+## Check we have at least values for current or average hashrate
+    quit('CRITICAL', 'Must supply at least one of --hash_rate_current --hash_rate_average')
+        unless (
+            ($hash_rate_current_warning_number && $hash_rate_current_critical_number)
+                ||
+            ($hash_rate_average_warning_number && $hash_rate_average_critical_number)
+        );
 
 
 ## Get values for number of failed hashes limits
@@ -287,9 +303,15 @@ use DateTime;
 
     ## Current hash-rate is sub-par
         quit("CRITICAL", "Current hash rate < $hash_rate_current_critical_text $latest->{ raw }")
-            if ($latest->{ hash_rate_current_numeric } < $hash_rate_current_critical_number);
+            if ($hash_rate_current_critical_number && $latest->{ hash_rate_current_numeric } < $hash_rate_current_critical_number);
         quit("WARNING", "Current Hash rate < $hash_rate_current_warning_text $latest->{ raw }")
-            if ($latest->{ hash_rate_current_numeric } < $hash_rate_current_warning_number);
+            if ($hash_rate_current_warning_number && $latest->{ hash_rate_current_numeric } < $hash_rate_current_warning_number);
+
+    ## Average hash-rate is sub-par
+        quit("CRITICAL", "Average hash rate < $hash_rate_average_critical_text $latest->{ raw }")
+            if ($hash_rate_average_critical_number && $latest->{ hash_rate_average_numeric } < $hash_rate_average_critical_number);
+        quit("WARNING", "Average Hash rate < $hash_rate_average_warning_text $latest->{ raw }")
+            if ($hash_rate_average_warning_number && $latest->{ hash_rate_average_numeric } < $hash_rate_average_warning_number);
 
     ## How much has failed hashrate increased over $period
         my $failed_hashes_increase = $latest->{ hashes_failed } - $earliest->{ hashes_failed };
@@ -358,9 +380,11 @@ use DateTime;
     sub help {
         print "Version $VERSION\n";
         print "USAGE\n\n";
-        print "   check_btc_miner --hash_rate_current=warningMh/s,criticalMh/s [ --miner=" . join('|', keys(%$known_miners)) . " ] [ --log=$default_log_file ] [ --period=$default_period ] [ watchdog=$default_watchdog ] [ --store=$default_store ] [ --failed_hashes=warning,critical ] [ --failed_hashes_percentage=warning,critical\n";
+        print "   check_btc_miner --hash_rate_current=warningMh/s,criticalMh/s --hash_rate_average=warningMh/s,criticalMh/s [ --miner=" . join('|', keys(%$known_miners)) . " ] [ --log=$default_log_file ] [ --period=$default_period ] [ watchdog=$default_watchdog ] [ --store=$default_store ] [ --failed_hashes=warning,critical ] [ --failed_hashes_percentage=warning,critical\n";
         print "OPTIONS\n";
-        print "  --hash_rate_current            If the hash rate drops below these values an error will be returned. Values are integers and must be appended with Xh/s where X is one of " . join(',', keys(%$multipliers)) . " e.g --hash_rate_current=100Gh/s,50Gh/s\n";
+        print "  --help                         This help message\n";
+        print "  --hash_rate_current            If the current hash rate drops below these values an error will be returned. Values are integers and must be appended with Xh/s where X is one of " . join(',', keys(%$multipliers)) . " e.g --hash_rate_current=100Gh/s,50Gh/s\n";
+        print "  --hash_rate_average            If the average hash rate drops below these values an error will be returned. Values are integers and must be appended with Xh/s where X is one of " . join(',', keys(%$multipliers)) . " e.g --hash_rate_average=120Gh/s,110Gh/s\n";
         print "  --miner                        The miner you are using, at present " . join (',', sort(keys(%$known_miners))) . " are supported (Default: $default_miner)\n";
         print "  --log                          The logfile where the output from your miner is sent and should be read from (Default: $default_log_file)\n";
         print "  --period                       The number of minutes that the plugin should monitor, this is used when determining the failed has increase (Default: $default_period)\n";
