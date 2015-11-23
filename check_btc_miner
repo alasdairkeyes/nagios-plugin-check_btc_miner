@@ -6,7 +6,7 @@ use Getopt::Long;
 use Nagios::Plugin qw(%ERRORS);
 use DateTime;
 
-    my $VERSION                 = 0.4;
+    my $VERSION                 = 0.5;
 
 ## Defaults
     my $default_log_file                = '/var/log/syslog';
@@ -302,15 +302,15 @@ use DateTime;
 
 
     ## Current hash-rate is sub-par
-        quit("CRITICAL", "Current hash rate < $hash_rate_current_critical_text $latest->{ raw }")
+        quit("CRITICAL", "Current hash rate less than $hash_rate_current_critical_text $latest->{ raw }")
             if ($hash_rate_current_critical_number && $latest->{ hash_rate_current_numeric } < $hash_rate_current_critical_number);
-        quit("WARNING", "Current Hash rate < $hash_rate_current_warning_text $latest->{ raw }")
+        quit("WARNING", "Current Hash rate less than $hash_rate_current_warning_text $latest->{ raw }")
             if ($hash_rate_current_warning_number && $latest->{ hash_rate_current_numeric } < $hash_rate_current_warning_number);
 
     ## Average hash-rate is sub-par
-        quit("CRITICAL", "Average hash rate < $hash_rate_average_critical_text $latest->{ raw }")
+        quit("CRITICAL", "Average hash rate less than $hash_rate_average_critical_text $latest->{ raw }")
             if ($hash_rate_average_critical_number && $latest->{ hash_rate_average_numeric } < $hash_rate_average_critical_number);
-        quit("WARNING", "Average Hash rate < $hash_rate_average_warning_text $latest->{ raw }")
+        quit("WARNING", "Average Hash rate less than $hash_rate_average_warning_text $latest->{ raw }")
             if ($hash_rate_average_warning_number && $latest->{ hash_rate_average_numeric } < $hash_rate_average_warning_number);
 
     ## How much has failed hashrate increased over $period
