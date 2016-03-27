@@ -6,7 +6,7 @@ use Getopt::Long;
 use Nagios::Plugin qw(%ERRORS);
 use DateTime;
 
-    my $VERSION                 = 0.6;
+    my $VERSION                 = 0.7;
 
 ## Defaults
     my $default_log_file                = '/var/log/syslog';
@@ -24,6 +24,8 @@ use DateTime;
     my $default_period                  = 30;
     my $default_watchdog                = 60;
 
+    my $default_time_zone               = 'local';
+
 
 ## Settings to use, obtained from defaults
     my $log_file                        = $default_log_file;
@@ -40,6 +42,8 @@ use DateTime;
 
     my $hash_rate_current_limits        = '';
     my $hash_rate_average_limits        = '';
+
+    my $time_zone                       = $default_time_zone;
 
 
 ## Number of minutes to hold historical information for
@@ -215,7 +219,7 @@ use DateTime;
     }
 
 ## Get a DateTime object for now, used throughout
-    my $now = DateTime->now;
+    my $now = DateTime->now( time_zone => $time_zone );
 
 ## Get historical data from store
     my $data = read_store();
@@ -629,7 +633,8 @@ use DateTime;
                 day     => $2,
                 hour    => $3,
                 minute  => $4,
-                second  => $5
+                second  => $5,
+                time_zone   => $time_zone,
             );
 
         ## Syslog doesn't store year so check if this is last years log
