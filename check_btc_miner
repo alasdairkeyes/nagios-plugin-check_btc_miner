@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 use Getopt::Long;
-use Nagios::Plugin qw(%ERRORS);
+use Monitoring::Plugin qw(%ERRORS);
 use DateTime;
 
     my $VERSION                 = 0.7;
